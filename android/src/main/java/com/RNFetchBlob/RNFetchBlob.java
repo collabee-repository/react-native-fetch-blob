@@ -3,7 +3,13 @@ package com.RNFetchBlob;
 import android.app.Activity;
 import android.app.DownloadManager;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.net.Uri;
+import android.os.Build;
+import android.support.v4.content.FileProvider;
+import android.webkit.MimeTypeMap;
+import android.widget.Toast;
 
 import com.facebook.react.bridge.ActivityEventListener;
 import com.facebook.react.bridge.Callback;
@@ -23,7 +29,9 @@ import com.facebook.react.modules.network.OkHttpClientProvider;
 import okhttp3.OkHttpClient;
 import okhttp3.JavaNetCookieJar;
 
+import java.io.File;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -98,10 +106,56 @@ public class RNFetchBlob extends ReactContextBaseJavaModule {
     @ReactMethod
     public void actionViewIntent(String path, String mime, final Promise promise) {
         try {
-            Intent intent= new Intent(Intent.ACTION_VIEW)
-                    .setDataAndType(Uri.parse("file://" + path), mime);
-            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            this.getReactApplicationContext().startActivity(intent);
+            /*
+             *  There is a breaking change related to send file to other application since anroid N
+             *  So we split logic depending on Android version.
+             *
+             *  Reference 1 - https://developer.android.com/about/versions/nougat/android-7.0-changes.html?hl=ko
+             *  Reference 2 - https://github.com/wkh237/react-native-fetch-blob/pull/614
+             *
+             */
+            if (Build.VERSION.SDK_INT >= 24) {
+                // Get mimeType not from argument but from actual downloaded file
+                String fileExtension
+                        = MimeTypeMap.getFileExtensionFromUrl(Uri.fromFile(new File(path)).toString());
+                String mimeType
+                        = MimeTypeMap.getSingleton().getMimeTypeFromExtension(fileExtension);
+
+                Uri uriForFile = FileProvider.getUriForFile(getCurrentActivity(), this.getReactApplicationContext().getPackageName() + ".provider", new File(path));
+
+                // Create the intent with data and type
+                Intent intent = new Intent(Intent.ACTION_VIEW).setDataAndType(uriForFile, mimeType);
+
+                // Set flag to give temporary permission to external app to use FileProvider
+                intent.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+                // Validate that the device can open the file
+                PackageManager pm = getCurrentActivity().getPackageManager();
+                if (intent.resolveActivity(pm) != null) {
+                    this.getReactApplicationContext().startActivity(intent);
+                }
+            } else {
+                // Get mimeType not from argument but from actual downloaded file
+                String fileExtension
+                        = MimeTypeMap.getFileExtensionFromUrl(Uri.fromFile(new File(path)).toString());
+                String mimeType
+                        = MimeTypeMap.getSingleton().getMimeTypeFromExtension(fileExtension);
+                Intent intent = new Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(Uri.parse("file://" + path), mimeType).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+                // Verify it resolves
+                PackageManager pm = getCurrentActivity().getPackageManager();
+                List<ResolveInfo> activities = pm.queryIntentActivities(intent, 0);
+                boolean isIntentSafe = activities.size() > 0;
+
+                // Start an activity if it's safe
+                if (!isIntentSafe) {
+                    throw new Exception("There is no activity to handle this intent");
+                }
+
+                this.getReactApplicationContext().startActivity(intent);
+            }
+
             ActionViewVisible = true;
 
             final LifecycleEventListener listener = new LifecycleEventListener() {
@@ -324,7 +378,7 @@ public class RNFetchBlob extends ReactContextBaseJavaModule {
     @ReactMethod
     public void fetchBlob(ReadableMap options, String taskId, String method, String url, ReadableMap headers, String body, final Callback callback) {
         new RNFetchBlobReq(options, taskId, method, url, headers, body, null, mClient, callback).run();
-}
+    }
 
     @ReactMethod
     public void fetchBlobForm(ReadableMap options, String taskId, String method, String url, ReadableMap headers, ReadableArray body, final Callback callback) {
@@ -369,5 +423,4 @@ public class RNFetchBlob extends ReactContextBaseJavaModule {
         }
 
     }
-
 }
